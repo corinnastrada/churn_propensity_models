@@ -1,4 +1,3 @@
-# churn_propensity_models
 
 DATASET:
 
