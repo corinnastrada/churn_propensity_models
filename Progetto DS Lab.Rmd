@@ -1,0 +1,893 @@
+---
+title: "Progetto Data Science Lab"
+author: "Corinna Strada"
+date: "5/25/2022"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+df <-read.csv("/Users/paolocerabolini/Desktop/Data\ Science\ Lab/complete_agg.csv", sep=",") 
+
+View(df)
+
+ncol(df) #102 variabili
+nrow(df)
+colnames(df)
+
+```
+
+PREPROCESSING
+
+Si elimina la variabile DATA
+```{r}
+df <- df[,c(1:101)] #elimino la variabile DATA
+```
+
+Si eliminano le variabili che contengono solo valori pari a zero
+```{r}
+#per eliminare le colonne con soli 0
+
+toremove <- c()
+
+for(i in 1:ncol(df)) {
+  if(all(df[,i] == 0)) {
+    toremove <- append(toremove, i)
+  }
+}
+
+df2 <- df[, -toremove]
+
+
+ncol(df2) #70 variabili
+
+```
+
+Si eliminano le osservazioni duplicate
+```{r}
+data.table::uniqueN(df2[["external_id"]]) #valori unici nella colonna external_id
+
+library(dplyr)
+nrow(distinct(df2))
+
+df2 <- distinct(df2) #tengo le righe che non sono duplicate
+
+nrow(distinct(df2, external_id)) #gli external_id unici sono 326414
+
+colnames(df2)
+
+```
+
+Le osservazioni che contengono lo stesso external_vengono aggregate tramite somma (per le variabili factor) e media ponderata. Successivamente, i valori aggregati >1 nelle variabili factor vengono posti =1 per avere la variabile binaria (presenza/assenza)
+```{r}
+#aggrego, tramite sommma e media, le righe con lo stesso external_id e creo il nuovo dataset df3
+v1 <- aggregate( df2[,2:14], by=list(df2$external_id), FUN = sum )
+v2 <- aggregate( df2[,15:56], by=list(df2$external_id), FUN = weighted.mean ) #ponderata
+v3 <- aggregate( df2[,57:70], by=list(df2$external_id), FUN = sum )
+df3 <- merge(v1, v2, by="Group.1")
+df3 <- merge(df3, v3, by="Group.1")
+colnames(df3)[1] <- "external_id"
+
+#riconverto in 0-1 le variabili dummy
+
+df3[ , 4:14 ][ df3[ , 4:14 ] > 1 ] <- 1
+df3[ , 57:70 ][ df3[ , 57:70 ] > 1 ] <- 1
+
+```
+
+La variabile target Pdisc assume valore 0 se l'utende non disdice l'abbonamento, mentre assume valore 1 se disdice.
+Si è interessati a classificare correttamente i soggetti che disdicono l'abbonamento, dunque si cerca un modello che riesca a massimizzare la specificity dal momento che il pacchetto ‘caret’ di R considera come non event la classe 1 della variabile dipendente.
+```{r}
+b<-df3
+
+table(b$Pdisc)/nrow(b)*100
+```
+
+Si rendono factor le variabili che non sono state correttamnete lette come tali da R.
+```{r}
+b$external_id<-as.character(b$external_id)
+b$os_android<-as.factor(b$os_android)
+b$os_ios<-as.factor(b$os_ios)
+b$os_linux<-as.factor(b$os_linux)
+b$os_other<-as.factor(b$os_other)
+b$os_windows<-as.factor(b$os_windows)
+b$browser_chrome<-as.factor(b$browser_chrome)
+b$browser_firefox<-as.factor(b$browser_firefox)
+b$browser_opera<-as.factor(b$browser_opera)
+b$browser_other<-as.factor(b$browser_other)
+b$browser_safari<-as.factor(b$browser_safari)
+b$browser_unknown<-as.factor(b$browser_unknown)
+b$CINEMA<-as.factor(b$CINEMA)
+b$SPORT<-as.factor(b$SPORT)
+b$CALCIO<-as.factor(b$CALCIO)
+b$SKY_FAMIGLIA<-as.factor(b$SKY_FAMIGLIA)
+b$FLG_MV<-as.factor(b$FLG_MV)
+b$FLG_MYSKY<-as.factor(b$FLG_MYSKY)
+b$FLG_MYSKYHD<-as.factor(b$FLG_MYSKYHD)
+b$FLG_HD<-as.factor(b$FLG_HD)
+b$FLG_SKY_ON_DEMAND<-as.factor(b$FLG_SKY_ON_DEMAND)
+b$STB_HD<-as.factor(b$STB_HD)
+b$STB_MYSKY<-as.factor(b$STB_MYSKY)
+b$STB_MYSKYHD<-as.factor(b$STB_MYSKYHD)
+b$STB_SD<-as.factor(b$STB_SD)
+b$Pdisc<-as.factor(b$Pdisc)
+```
+
+Non sono presenti dati mancanti
+```{r}
+sapply(b, function(x)(sum(is.na(x)))) # NA counts
+```
+
+Dataset contente solo le variabili numeriche
+```{r}
+numeric <- sapply(b, function(x) is.numeric(x))
+numeric <-b[, numeric]
+str(numeric)
+
+sapply(numeric, function(x) var(x))
+
+```
+
+Analisi di collinearità sulle variabili nuemriche: non sono presenti variabili altamente correlate
+```{r}
+library(corrplot)
+library(GGally)
+ggcorr(numeric, method = c("everything", "pearson"), size=2)
+#angle = 45, hjust = 0.7
+```
+
+È presente near zero variance ma le variabili non sono state eliminate in quanto potrebbe esserci una perdita di informazioni importanti
+```{r}
+library(caret)
+nzv=nearZeroVar(numeric, saveMetrics = TRUE)
+nzv #da non eliminare
+```
+
+Dataset contente solo variabili factor
+```{r}
+isfactor <- sapply(b, function(x) is.factor(x))
+factordata <- b[, isfactor]
+str(factordata)
+colnames(factordata)
+```
+
+Si controlla il livello di associazione tra ogni coppia di variabili categoriali: se due variabili hanno il valore del chi-quadrato normalizzato maggiore di 0.8 allora significa che l’associazione tra le due variabili è forte.
+```{r}
+#chi square
+library(plyr)
+library(dplyr)
+
+combos <- combn(ncol(factordata),2)
+combos
+
+library(plyr)
+adply(combos, 2, function(x) {
+  test <- chisq.test(factordata[, x[1]], factordata[, x[2]])
+  tab  <- table(factordata[, x[1]],factordata[, x[2]])
+  out <- data.frame("Row" = colnames(factordata)[x[1]]
+                    , "Column" = colnames(factordata[x[2]])
+                    , "Chi.Square" = round(test$statistic,3)
+                    , "df"= test$parameter
+                    , "p.value" = round(test$p.value, 3)
+                    , "Chi.Square norm"  =test$statistic/(sum(table(factordata[,x[1]], factordata[,x[2]]))* min(length(unique(factordata[,x[1]]))-1 , length(unique(factordata[,x[2]]))-1)) 
+  )
+  
+  
+  return(out)
+  
+})
+
+
+#os_windows os_other --> 0.78
+#os_other browser_unknown -->0.9
+#os_windows browser_unknown --> 0.7
+
+```
+
+La coppia di variabili os_other è browser_unknown presenta un chi quadro di 0.9 quindi eliminiamo la variabile os_other
+```{r}
+#togliamo os_other [4]
+
+factordata <- factordata[, -4]
+colnames(factordata)
+
+```
+
+terminate le analisi, si riunisce il dataset contenete solo le variabili numeriche al dataset contente solo le variabili factor. Si elimina la vriabile external_id perchè è un identificativo.
+```{r}
+factordata=cbind(factordata, b$external_id)
+names(factordata)
+names(factordata)[25] <- "external_id"
+
+numeric=cbind(numeric, b$external_id)
+names(numeric)
+names(numeric)[45] <- "external_id"
+
+b2 <- merge(numeric, factordata, by="external_id")
+b2 <- b2[,c(2:69)] #elimino la variabile external_id perchè è un identificativo
+colnames(b2)
+
+```
+
+DIVIDERE IN TRAINING VALIDATION E SCORE 60 30 10
+Il dataset ricavato dopo il preprocessing è stato diviso in tre dataset, attraverso un campionamento stratificato per il target Pdisc.
+Dopo aver diviso il dataset si verifica che, in ognuno dei tre dataset, le percentuali dei soggetti in ogni classe del target siano simili a quelle del dataset iniziale.
+```{r}
+#DIVIDERE IN TRAINING VALIDATION E SCORE 60 30 10
+
+# Input 1. The data frame that you want to split into training, validation, and test.
+df <- b2
+
+# Input 2. Set the fractions of the dataframe you want to split into training, 
+# validation, and test.
+fractionTraining   <- 0.60
+fractionValidation <- 0.30
+fractionScore      <- 0.10
+
+# Compute sample sizes.
+sampleSizeTraining   <- floor(fractionTraining   * nrow(df))
+sampleSizeValidation <- floor(fractionValidation * nrow(df))
+sampleSizeScore      <- floor(fractionScore      * nrow(df))
+
+# Create the randomly-sampled indices for the dataframe. Use setdiff() to
+# avoid overlapping subsets of indices.
+indicesTraining    <- sort(sample(seq_len(nrow(df)), size=sampleSizeTraining))
+indicesNotTraining <- setdiff(seq_len(nrow(df)), indicesTraining)
+indicesValidation  <- sort(sample(indicesNotTraining, size=sampleSizeValidation))
+indicesScore       <- setdiff(indicesNotTraining, indicesValidation)
+
+# Finally, output the three dataframes for training, validation and test.
+Training   <- df[indicesTraining, ]
+Validation <- df[indicesValidation, ]
+Score      <- df[indicesScore, ]
+
+
+# control ever this: data stratified by target
+
+table(df$Pdisc)/nrow(df)
+
+table(Training$Pdisc)/nrow(Training)
+table(Validation$Pdisc)/nrow(Validation)
+table(Score$Pdisc)/nrow(Score)
+
+```
+
+È presente uno sbilanciamento nelle classi del target e questo può avere un impatto negativo sull'addestramento del modello.
+Tecnica SMOTE: metodo ibrido che fa undersampling per le osservazioni della classe a frequenza maggiore e crea dati sintetici per la calsse con frequenza minore.
+```{r}
+#metodo Smote sul training per bilanciare le classi del target
+
+#https://topepo.github.io/caret/subsampling-for-class-imbalances.html
+#https://cran.r-project.org/src/contrib/Archive/DMwR/
+#install.packages( "/Users/paolocerabolini/Downloads/DMwR_0.4.1.tar", repos=NULL, type="source" )
+#https://www.statology.org/smote-in-r/
+#https://towardsdatascience.com/smote-fdce2f605729
+
+library(DMwR) #approccio ibrido (dati sintetici)
+
+set.seed(9560)
+smote_train <- SMOTE(Pdisc ~ ., data  = Training)                         
+table(smote_train$Pdisc)/nrow(smote_train) 
+
+```
+
+STEP 1: addestramento dei modelli
+In questo primo step sono stati addestrati diversi modelli massimizzando la specificity, che rappresenta la metrica di interesse per l’analisi in quanto l’interesse è di classificare correttamente i veri negativi ovvero gli utenti che disdicono l'abbonamento.
+
+Classification Tree
+Il modello ad albero è un modello diretto (o discriminante) e permette di trattare qualsiasi tipo di covariata e variabile dipendente.
+In un albero ideale i soggetti in un nodo finale dovrebbero essere massimamente omogenei in termini di distribuzione del target, mentre le distribuzioni del target tra nodi finali dovrebbero essere massimamente differenti.
+Questo modello non richiede nessuna tecnica di preprocessing e inoltre può essere utilizzato come model selector.
+```{r}
+#Tree
+library(caret)
+library(rpart) # pacchetto per costruire albero
+library(rpart.plot) # pacchetto per visualizzazione
+#primo modello: ALBERO
+#utilizzato anche come model selector
+metric <- "Spec"
+set.seed(1)
+cvCtrl <- trainControl(method = "cv", number=10, search="grid", classProbs = TRUE,
+                       summaryFunction = twoClassSummary)
+tree <- train(make.names(Pdisc) ~ ., data = smote_train, method = "rpart",
+              tuneLength = 10, metric=metric,
+              trControl = cvCtrl)
+
+tree
+plot(tree)
+
+getTrainPerf(tree)
+confusionMatrix(tree)
+```
+
+Rappresentata graficamente l’importanza delle variabili e utilizziamo l'albero come model selector: creiamo nuovi dataset di training, validation e score inserendo solamente le variabili selezionate.
+```{r}
+# var imp of the tree
+plot(varImp(object=tree),main="train tuned - Variable Importance")
+
+# select only important variables
+vi=as.data.frame(tree$finalModel$variable.importance)
+viname=row.names(vi)
+head(viname)
+
+
+# new train with selected covariates+ target
+Train_modsel=smote_train[,c("SPORT", "categories_sports","L1001_2500","weekend_afternoon","CINEMA", "CALCIO")]
+Train_modsel=cbind(smote_train$Pdisc, Train_modsel)
+head(Train_modsel)
+names(Train_modsel)[1] <- "Pdisc"
+head(Train_modsel)
+
+# new validation with selected covariates+ target
+Valid_modsel=Validation[,c("SPORT", "categories_sports","L1001_2500","weekend_afternoon","CINEMA", "CALCIO")]
+Valid_modsel=cbind(Validation$Pdisc, Valid_modsel)
+head(Valid_modsel)
+names(Valid_modsel)[1] <- "Pdisc"
+head(Valid_modsel)
+
+#new score with selected covariates+ target
+Score_modsel=Score[,c("SPORT", "categories_sports","L1001_2500","weekend_afternoon","CINEMA", "CALCIO")]
+Score_modsel=cbind(Score$Pdisc, Score_modsel)
+head(Score_modsel)
+names(Score_modsel)[1] <- "Pdisc"
+head(Score_modsel)
+
+```
+
+Random Forest
+Il random forest è un modello ensemble che per ogni albero estrae un campione bootstrap dai dati e seleziona casualmente un sottoinsieme di k covariate dalle p di partenza.
+Si crea un modello di consenso che assegna, in base al criterio del majority vote, a ogni soggetto un target.
+Questo modello non richiede nessun tipo di preprocessing.
+```{r}
+#Random Forest
+library(caret)
+metric <- "Spec"
+seed <- 7
+set.seed(seed)
+control <- trainControl(method="cv", number=10, search="grid", summaryFunction = twoClassSummary, classProbs = TRUE)
+tunegrid <- expand.grid(.mtry=c(1:5))
+rf <- train(make.names(Pdisc)~., data=smote_train, method="rf", metric=metric, tuneGrid=tunegrid, ntree=25, trControl=control)
+
+# best tuned mtry with highest Spec
+
+rf
+# mtry=5 è il numero k di covariate nel modello vincente
+plot(rf)
+confusionMatrix(rf)
+
+```
+
+Utilizziamo anche il Random Forest come model selector e creiamo nuovi dataset di training, validation e score inserendo le variabili selezionate dal random forest.
+```{r}
+Vimportance <- varImp(rf)
+head(Vimportance)
+Vimportance
+
+plot(varImp(object=rf),main="train tuned - Variable Importance")
+
+# SAVE var IMP As DATAFRAME####
+VImP=as.data.frame(Vimportance$importance)
+head(VImP)
+dim(VImP)
+
+#..then drop least important var (<20%, <10% depends on the number M of x), 
+# select them (V) and select V columns from M columns in the initial dataset
+
+V=subset(VImP, Overall>20)
+V2=t(V)
+# transpose
+row.names(V)
+
+# target
+Pdisc=smote_train[68] 
+Pdisc_v=Validation[68] 
+
+# select important vars
+Xselected=smote_train[,c("how_many_ok_urls", "how_many_ko_urls", "feriale_morning", "feriale_afternoon", "feriale_evening" ,"feriale_night", "weekend_morning" ,"weekend_afternoon",
+                      "weekend_evening","weekend_night", "L00_50", "L51_100", "L101_250" ,"L251_500", "L501_1000", "L1001_2500", "L2501_5000","categories_artandentertainment",
+                      "categories_automotive","categories_business", "categories_finance","categories_foodanddrink", "categories_hobbiesandinterests","categories_lawgovtandpolitics",
+                      "categories_news","categories_science", "categories_society","categories_sports", "categories_technologyandcomputing", "categories_travel" ,
+                      "browser_chrome","CINEMA", "SPORT","SKY_FAMIGLIA", "FLG_MYSKYHD","FLG_SKY_ON_DEMAND", "STB_HD","STB_MYSKYHD")]
+
+Xselected_v=Validation[,c("how_many_ok_urls", "how_many_ko_urls", "feriale_morning", "feriale_afternoon", "feriale_evening" ,"feriale_night", "weekend_morning" ,"weekend_afternoon",
+                          "weekend_evening","weekend_night", "L00_50", "L51_100", "L101_250" ,"L251_500", "L501_1000", "L1001_2500", "L2501_5000","categories_artandentertainment",
+                          "categories_automotive","categories_business", "categories_finance","categories_foodanddrink", "categories_hobbiesandinterests","categories_lawgovtandpolitics",
+                          "categories_news","categories_science", "categories_society","categories_sports", "categories_technologyandcomputing", "categories_travel" ,
+                          "browser_chrome","CINEMA", "SPORT","SKY_FAMIGLIA", "FLG_MYSKYHD","FLG_SKY_ON_DEMAND", "STB_HD","STB_MYSKYHD")]
+
+# add
+train_rf=cbind(Xselected,Pdisc) #newDAta
+head(train_rf)
+valid_rf=cbind(Xselected_v,Pdisc_v) 
+
+# checks
+colnames(train_rf)
+colnames(valid_rf)
+row.names(V)
+
+```
+
+Modello Logistico
+Il modello logistico è utilizzato per studiare la relazione esistente tra una variabile dicotomica dipendente, che è una realizzazione di una variabile casuale avente distribuzione di Bernoulli, e una o più variabili indipendenti che possono essere sia qualitative sia quantitative.
+Questo modello richiede come preprocessing:
+• missing data 
+• separation
+• model selection
+
+Modello logistico con le variabili selezionate dall'albero
+```{r}
+#logistico con mod sel di albero
+set.seed(1)
+metric <- "Spec"
+ctrl =trainControl(method="cv", number = 10, classProbs = T,
+                   summaryFunction=twoClassSummary)
+glm_tree=train(make.names(Pdisc)~.,
+          data=Train_modsel,method = "glm",
+          trControl = ctrl, tuneLength=5, trace=TRUE, na.action = na.pass, metric=metric)
+glm_tree
+confusionMatrix(glm_tree)
+```
+
+```{r}
+plot(varImp(object=glm_tree),main="train tuned - Variable Importance")
+```
+
+Modello logistico con le variabili selezionate dal random forest: restituisce errore quindi togliamo la variabil weekend_night che causa separation
+```{r}
+#logistico con mod sel di random forest
+#set.seed(1)
+#metric <- "Spec"
+#ctrl =trainControl(method="cv", number = 10, classProbs = T,
+#                   summaryFunction=twoClassSummary)
+#glm_rf=train(make.names(Pdisc)~.,
+#          data=train_rf,method = "glm",
+#          trControl = ctrl, tuneLength=5, trace=TRUE, na.action = na.pass, metric=metric)
+#glm_rf
+#confusionMatrix(glm_rf)
+```
+
+
+Modello logistico con variabili selezionate dal random forest dopo aver eliminato la variabile weekend_night
+```{r}
+#logistico con mod sel di random forest
+colnames(train_rf)
+train_rf_mod <-train_rf
+train_rf_mod = train_rf_mod[,-10]
+colnames(train_rf_mod)
+valid_rf_mod <-valid_rf
+valid_rf_mod = valid_rf_mod[,-10]
+
+set.seed(1)
+metric <- "Spec"
+ctrl =trainControl(method="cv", number = 10, classProbs = T,
+                   summaryFunction=twoClassSummary)
+glm_rf=train(make.names(Pdisc)~.,
+          data=train_rf_mod,method = "glm",
+          trControl = ctrl, tuneLength=5, trace=TRUE, na.action = na.pass, metric=metric)
+glm_rf
+confusionMatrix(glm_rf)
+```
+
+
+```{r}
+plot(varImp(object=glm_rf),main="train tuned - Variable Importance")
+```
+
+Bagging Tree
+Il modello Bagging è un metodo ensemble, ovvero un modello ad albero più avanzato: dal dataset di partenza si ricavano diversi campioni bootstrap e per ogni campione bootstrap si ricava un albero decisionale.
+La classificazione di un soggetto in una determinata classe dipende da come è stato classificato dagli alberi in ogni campione bootstrap: se la maggior parte dei suoi target previsti dagli alberi in ogni campione bootstrap lo classificano, ad esempio, nella classe ‘No’ allora il soggetto verrà considerato come appartenente alla classe ‘No’.
+```{r}
+#bagging
+set.seed(1)
+metric <- "Spec"
+Control=trainControl(method= "cv",number=10, classProbs=TRUE,
+                     summaryFunction=twoClassSummary)
+bagg <- train( make.names(Pdisc)~. , data=smote_train, method="treebag", trControl=Control,
+               importance=TRUE, metric=metric)
+
+bagg
+confusionMatrix(bagg)
+
+```
+
+```{r}
+plot(varImp(object=bagg),main="train tuned - Variable Importance")
+```
+
+Naive-Bayes
+Il Naive Bayes stima gli elementi della formula di Bayes per poter calcolare la probabilità a posteriori di ogni soggetto di appartenere ad una determinata classe del target condizionatamente al valore delle covariate, dunque è un modello indiretto (o generativo).
+Il Naive Bayes supera i limiti del classificatore Bayes trasformando una densità k- variata nel prodotto di k densità univariate, l’ipotesi è dunque che all’interno di ogni classe del target le covariate siano tra loro indipendenti.
+Preprocessing richiesti:
+• collinearità
+• missing data per le covariate continue
+• zero problem
+```{r}
+#naive bayes
+set.seed(1)
+metric <- "Spec"
+ctrl =trainControl(method="cv", number = 10, classProbs = T,
+                   summaryFunction=twoClassSummary)
+naivebayes=train(make.names(Pdisc)~.,
+                      data=smote_train ,method = "naive_bayes", metric=metric,
+                      trControl = ctrl, tuneLength=5, na.action = na.pass) 
+naivebayes
+confusionMatrix(naivebayes)
+
+```
+
+```{r}
+plot(varImp(object=naivebayes),main="train tuned - Variable Importance")
+```
+
+Gradient Boosting
+La regola classificativa del gradient boosting, un altro metodo ensemble, consiste nella somma pesata delle regole classificative degli M classificatori con un coefficiente che pesa la bontà classificativa del modello base nell’iterazione m-esima.
+Nell’m-esima iterazione l’m-esimo albero lavora sulla componente residua generata dal modello m-1 esimo nell’iterazione precedente e questo rende il gradient boosting molto performante. Inoltre viene stimato un peso che definisce la bontà classificativa dell’m-esimo classificatore.
+```{r}
+#gradient boosting
+library(gbm)
+set.seed(1234)
+metric <- "Spec"
+Control=trainControl(method= "cv",number=10, classProbs=TRUE,
+                     summaryFunction=twoClassSummary)
+
+gbm <- train(make.names(Pdisc)~. , data=smote_train, method = "gbm", metric = metric,
+             tuneLength = 5, trControl = Control)
+
+gbm
+confusionMatrix(gbm)
+
+```
+
+```{r}
+plot(varImp(object=gbm),main="train tuned - Variable Importance")
+```
+
+Neural Network 
+La rete neurale è un metodo di apprendimento automatico che cerca di generare un output il più vicino possibile alla variabile target.
+La rete stimata di default dai software è la General Linear Model che ha soltanto uno strato nascosto con, al suo interno, diversi neuroni nascosti. I neuroni nascosti sono ricavati da questa rete come combinazioni non lineari delle covariate che vengono poi combinati linearmente per generare l’output.
+La rete neurale richiede i seguenti step di preprocessing:
+• Rimuovere i dati mancanti
+• Model Selection
+• Scalare gli input tra 0-1
+• Rimuovere la collinearità tra le covariate 
+
+Neural Network con variabili selezionate dall’albero
+```{r}
+#rete neurale con var dell'albero
+#preProcess = "range" per normalizzare le covariate tra 0 e 1
+library(caret)
+library(nnet)
+set.seed(7)
+metric <- "Spec"
+ctrl = trainControl(method="cv", number=10, search = "grid", classProbs=TRUE, 
+                    summaryFunction = twoClassSummary)
+nnet_tree<- train(make.names(Pdisc)~. , data=Train_modsel,
+                  method = "nnet",
+                  preProcess = "range", 
+                  metric=metric, trControl=ctrl,
+                  trace = TRUE, # use true to see convergence
+                  maxit = 300)
+
+print(nnet_tree) 
+nnet_tree
+
+plot(nnet_tree)
+getTrainPerf(nnet_tree) 
+
+confusionMatrix(nnet_tree)
+```
+
+```{r}
+plot(varImp(object=nnet_tree),main="train tuned - Variable Importance")
+```
+
+Neural Network con variabili selezionate dal random forest
+```{r}
+#rete neurale con var del random forest
+#preProcess = "range" per normalizzare le covariate tra 0 e 1
+library(caret)
+library(nnet)
+set.seed(7)
+metric <- "Spec"
+ctrl = trainControl(method="cv", number=10, search = "grid", classProbs=TRUE, 
+                    summaryFunction = twoClassSummary)
+nnet_rf<- train(make.names(Pdisc)~. , data=train_rf,
+                method = "nnet",
+                preProcess = "range", 
+                metric=metric, trControl=ctrl,
+                trace = TRUE, # use true to see convergence
+                maxit = 300)
+
+print(nnet_rf) 
+nnet_rf
+
+plot(nnet_rf)
+getTrainPerf(nnet_rf) 
+
+confusionMatrix(nnet_rf)
+```
+
+```{r}
+plot(varImp(object=nnet_rf),main="train tuned - Variable Importance")
+```
+
+Multi-Layer Perceptron, multiple layers
+Type: Regression, Classification
+
+Tuning parameters:
+layer1 (#Hidden Units layer1)
+layer2 (#Hidden Units layer2)
+layer3 (#Hidden Units layer3)
+decay (Weight Decay)
+
+Multi-Layer Perceptron, multiple layers con variabili selezionate dall'albero
+```{r}
+#https://topepo.github.io/caret/train-models-by-tag.html#Neural_Network
+#rete neurale con var dell'albero
+#preProcess = "range" per normalizzare le covariate tra 0 e 1
+#install.packages("RSNNS",dependencies = TRUE, repos = "http://cran.us.r-project.org")
+library(RSNNS)
+library(caret)
+library(nnet)
+set.seed(7)
+metric <- "Spec"
+ctrl = trainControl(method="cv", number=10, search = "grid", classProbs=TRUE, 
+                    summaryFunction = twoClassSummary)
+mlpML_tree<- caret::train(make.names(Pdisc)~. , data=Train_modsel,
+                  method = 'mlpWeightDecayML',
+                  preProcess = "range", 
+                  metric=metric, trControl=ctrl,
+                  trace = TRUE, # use true to see convergence
+                  maxit = 300)
+
+print(mlpML_tree) 
+mlpML_tree
+
+plot(mlpML_tree)
+getTrainPerf(mlpML_tree) 
+
+confusionMatrix(mlpML_tree)
+```
+
+```{r}
+plot(varImp(object=mlpML_tree),main="train tuned - Variable Importance")
+```
+
+Multi-Layer Perceptron, multiple layers con variabili selezionate dal random forest
+```{r}
+#rete neurale con var del random forest
+#preProcess = "range" per normalizzare le covariate tra 0 e 1
+library(RSNNS)
+library(caret)
+library(nnet)
+set.seed(7)
+metric <- "Spec"
+ctrl = trainControl(method="cv", number=10, search = "grid", classProbs=TRUE, 
+                    summaryFunction = twoClassSummary)
+mlpML_rf<- caret::train(make.names(Pdisc)~. , data=train_rf,
+                  method = 'mlpWeightDecayML',
+                  preProcess = "range", 
+                  metric=metric, trControl=ctrl,
+                  trace = TRUE, # use true to see convergence
+                  maxit = 300)
+
+print(mlpML_rf) 
+mlpML_rf
+
+plot(mlpML_rf)
+getTrainPerf(mlpML_rf) 
+
+confusionMatrix(mlpML_rf)
+```
+
+```{r}
+plot(varImp(object=mlpML_rf),main="train tuned - Variable Importance")
+```
+
+STEP 2: Assessment
+
+In questo step si sceglie il modello migliore valutando le misure di performance classificative dei vari modelli sul dataset di validation.
+Con grafico box-plot, che non rappresenta ancora l’assessment, è possibile avere un’idea di quali potrebbero essere i modelli migliori osservando i risultati ottenuti per ogni modello sulle misure di ROC, sensitivity e specificity.
+
+I valori di ROC dei modelli Random Forest, Bagging Tree e Gradient <Boosting sono più elevati rispetto ai valori di ROC degli altri modelli quindi si può già dire che si dovranno valutare le curve lift di questi tre modelli.
+
+Per quanto riguarda i valori della specificity si può notare come il modello Naive Bayes abbia valore più elevato rispetto agli altri modelli.
+```{r}
+results <- resamples(list(glm_rf=glm_rf, naivebayes=naivebayes, glm_tree=glm_tree, mlpML_rf=mlpML_rf,rf=rf, mlpML_tree=mlpML_tree, tree=tree, gbm=gbm, bagg=bagg, nnet_tree=nnet_tree, nnet_rf=nnet_rf))
+summary(results)
+bwplot(results)
+```
+
+Probabilità/Target previsto
+Con il target osservato e la probabilità prevista sul dataset di validation dell’evento di interesse è possibile costruite le curve ROC per confrontare i modelli.
+Si procede calcolando le probabilità di appartenenza alla classe 1 del target per i modelli classificativi scelti per l’analisi:
+```{r}
+head(Validation)
+
+valid_rf_mod$glm_rf=predict(glm_rf,valid_rf_mod, "prob")[,2]
+Validation$naivebayes=predict(naivebayes,Validation, "prob")[,2]
+Valid_modsel$glm_tree=predict(glm_tree,Valid_modsel, "prob")[,2]
+valid_rf$mlpML_rf=predict(mlpML_rf,valid_rf, "prob")[,2]
+Valid_modsel$mlpML_tree=predict(mlpML_tree,Valid_modsel, "prob")[,2]
+Validation$rf=predict(rf,Validation, "prob")[,2]
+Validation$tree=predict(tree,Validation, "prob")[,2]
+Validation$gbm=predict(gbm,Validation, "prob")[,2]
+Validation$bagg=predict(bagg,Validation, "prob")[,2]
+Valid_modsel$nnet_tree=predict(nnet_tree,Valid_modsel, "prob")[,2]
+valid_rf$nnet_rf=predict(nnet_rf,valid_rf, "prob")[,2]
+
+```
+
+Le curve ROC mostrano come varia la sensitivity al variare del complemento a uno della specificity, ovvero quanto ogni modello classifica bene le osservazioni per tutte le possibili soglie.
+Una curva ideale cresce repentinamente attorno all’origine e poi si assesta su una retta orizzontale e questo significa che, per ogni possibile soglia, il modello ha sempre correttamente classificato gli eventi e non ha mai misclassificato i non eventi.
+Per valutare la bontà di una curva ROC si utilizza l’AUC, ovvero l’area sotto la curva, che corrisponde alla probabilità che un soggetto estratto a caso venga classificato correttamente dal modello indipendentemente dalla classe del target.
+```{r}
+library(pROC)
+roc.glm_rf=roc(make.names(Pdisc) ~ glm_rf, data = valid_rf_mod)
+roc.naivebayes=roc(make.names(Pdisc) ~ naivebayes, data = Validation)
+roc.glm_tree=roc(make.names(Pdisc) ~ glm_tree, data = Valid_modsel)
+roc.mlpML_rf=roc(make.names(Pdisc) ~ mlpML_rf, data = valid_rf)
+roc.mlpML_tree=roc(make.names(Pdisc) ~ mlpML_tree, data = Valid_modsel)
+roc.rf=roc(make.names(Pdisc) ~ rf, data = Validation)
+roc.tree=roc(make.names(Pdisc) ~ tree, data = Validation)
+roc.bagg=roc(make.names(Pdisc) ~ bagg, data = Validation)
+roc.gbm=roc(make.names(Pdisc) ~ gbm, data = Validation)
+roc.nnet_tree=roc(make.names(Pdisc) ~ nnet_tree, data = Valid_modsel)
+roc.nnet_rf=roc(make.names(Pdisc) ~ nnet_rf, data = valid_rf)
+
+#area under the curve
+
+roc.glm_rf
+roc.glm_tree
+roc.naivebayes
+roc.mlpML_rf
+roc.mlpML_tree
+roc.tree
+roc.rf
+roc.bagg
+roc.gbm
+roc.nnet_tree
+roc.nnet_rf
+
+```
+
+Curve ROC
+```{r}
+library(pROC)
+plot(roc.glm_rf)
+plot(roc.glm_tree,add=T,col="blue")
+plot(roc.naivebayes,add=T,col="yellow")
+plot(roc.mlpML_rf,add=T,col="green")
+plot(roc.tree,add=T,col="pink")
+plot(roc.rf,add=T,col="violet")
+plot(roc.mlpML_tree,add=T,col="red")
+plot(roc.bagg,add=T,col="orange")
+plot(roc.gbm,add=T,col="black")
+plot(roc.nnet_tree,add=T,col="purple")
+plot(roc.nnet_rf,add=T,col="deepskyblue")
+
+legend( "bottomright", c("glm_rf", "glm_tree", "naivebayes", "mlpML_rf", "tree", "rf", "mlpML_tree", "bagg", "gbm", "nnet_tree", "nnet_rf"), lty=1, bty='n', cex=.65,
+col=c("grey", "blue", "yellow", "green", "pink", "violet", "red", "orange", "black", "purple", "deepskyblue") )
+
+#text.col
+```
+
+Le curve ROC dei modelli Random Forest, Bagging Tree e Gradient Boosting sono molto simili e in alcuni punti si sovrappongono quindi, per scegliere il modello migliore, si devono valutare le curve LIFT che vengono costruite utilizzando gli stessi elementi utilizzati per le curve ROC.
+Nelle curve LIFT i soggetti vengono ordinati in ordine decrescente rispetto alle diverse probabilità previste per l’evento di interesse, in base alle quali si assegnano ai vari decili.
+Un buon modello ha nei primi decili la maggior parte dei soggetti e le probabilità previste sono molto più alte rispetto a quelle degli ultimi decili.
+Per scegliere il modello migliore è stato deciso di tenere in considerazione il secondo decile delle curve lift.
+
+Curve lift dei modelli con curva ROC simile
+serve il taret osservato e la prob prevista dell'event già salvate in precedenza
+```{r}
+library(funModeling)
+gain_lift(data = Validation, score = 'bagg', target = 'Pdisc')
+gain_lift(data = Validation, score = 'rf', target = 'Pdisc')
+gain_lift(data = Validation, score = 'gbm', target = 'Pdisc')
+```
+il Random Forest è il modello che cattura il maggior numero di successi percentuali nei primi due decili perciò è il modello vincente da utilizzare sui nuovi soggetti.
+Inoltre, nel grafico a destra della curva LIFT si può osservare che, selezionando il primo 20% dei clienti, la probabilità dell’evento è 2.86 volte quella globale.
+
+STEP 3: studio della soglia
+
+In questo terzo step si sceglie il valore della soglia da applicare, nello step 4, alle posterior che si ottengono sui dati di score per classificare i nuovi soggetti.
+Applicando la soglia di default (0.5) ai valori previsti dal modello migliore sui dati di validation, si ottiene la matrice di confusione dalla quale si può osservare che il modello non overfitta e può essere generalizzato.
+
+Per scegliere il valore della soglia si osserva il grafico che mostra come cambia il valore della specificity per ogni possibile valore della soglia, vale a dire per tutti i valori delle posterior stimate sul dataset di validation.
+Sull’asse delle ordinate si sceglie il valore della specificity che risulta essere soddisfacente dal punto di vista classificativo e si proietta questo punto sull’asse delle ascisse in modo da ricavare la soglia di interesse per poter classificare i nuovi dati. La soglia scelta è pari a 0,6.
+```{r}
+library(dplyr)
+library(caret)
+
+#confusion matrix del/dei best model
+rf
+confusionMatrix(rf)
+
+# DO AT HAND THE predicted M....for best model
+pred_y<-ifelse(Validation$rf>0.5, 1,0)
+pred_y=as.factor(pred_y)
+head(pred_y)
+
+actual=Validation$Pdisc
+actual=as.factor(actual)
+
+#confusion matrix sul validation 
+confusionMatrix(pred_y, Validation$Pdisc, positive="1")
+
+
+
+# step 3b: studio la soglia......
+
+y=Validation$Pdisc
+y=ifelse(y=="1",1,0)
+table(y)
+predProbT=Validation$rf
+
+library(ROCR)
+predRoc <- prediction(predProbT,y)
+# this step do nothing, useful only to have an ROCR object..giving us all metric when varying threshold
+class(predRoc)
+
+# roc curve
+roc.perf = performance(predRoc, measure = "tpr", x.measure = "fpr")
+plot(roc.perf)
+abline(a=0, b= 1) #minimizzare FPR
+
+#studio della soglia
+#sia svolto sia dal punto di vista grafico oppure in questo modo:
+spec.perf = performance(predRoc, measure = "spec") #vogliamo alta specificity -> cutoff basso
+plot(spec.perf)
+
+# create a dataset with measures when varying threshold
+spec=as.data.frame(spec.perf@y.values)
+colnames(spec)="spec"
+head(spec)
+
+#spec.perf@y.values rappresentano degli slot in cui i valori di x corrispondono ai vlori della soglia e #i valori di y corrispondono alla metrica selezionata all'interno della funzione
+
+# see specificity metrics (y.values) when varying threshold (x.values)
+performance(predRoc,measure="spec")
+# x=cutoff, y=specificity
+# example with cutoff=0.9828, we expect 0.9803 specificity
+# we need cutoff very large (>0.97) to have high SPEC
+
+
+# see lift for curiosity: funmodeling model the higher class of target thus R
+
+Validation$pR = predict(rf      , Validation, "prob")[,2]
+head(Validation$pR)
+
+library(funModeling)
+gain_lift(data = Validation, score = 'pR', target = 'Pdisc')
+
+# this agree with easly specificity (prob R) where the event was M 
+plot(spec.perf)
+
+```
+
+STEP 4: Score
+
+Dopo aver scelta la soglia allo step 3 sul dataset di validation, si applica il modello vincente al dataset di score e si calcolano le posterior.
+Infine, tramite la soglia scelta (0.6), si genera il target previsto per i soggetti presenti nel dataset di score.
+Si può notare come la percentuale della classe 1 sia molto simile a quella iniziale:questi risultati confermano che il modello scelto come migliore effettivamente ottiene una buona performance classificativa su nuovi dati.
+```{r}
+Score$prob = predict(rf, Score, "prob")
+head(Score$prob)
+probY=Score$prob[,2]
+Score$pred_y=ifelse(probY>0.6, "1","0")
+head(Score)
+table(Score$pred_y)
+table(Score$pred_y)/nrow(Score)
+
+```
+
+
+
+
+
+
+
+
