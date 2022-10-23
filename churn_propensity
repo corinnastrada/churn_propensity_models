@@ -1,5 +1,5 @@
 ---
-title: "Progetto Data Science Lab"
+title: "Churn propensity model "
 author: "Corinna Strada"
 date: "5/25/2022"
 output: word_document
@@ -9,27 +9,16 @@ output: word_document
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-```{r}
-df <-read.csv("/Users/paolocerabolini/Desktop/Data\ Science\ Lab/complete_agg.csv", sep=",") 
 
-View(df)
-
-ncol(df) #102 variabili
-nrow(df)
-colnames(df)
-
-```
 
 PREPROCESSING
 
-Si elimina la variabile DATA
 ```{r}
-df <- df[,c(1:101)] #elimino la variabile DATA
+df <- df[,c(1:101)]
 ```
 
 Si eliminano le variabili che contengono solo valori pari a zero
 ```{r}
-#per eliminare le colonne con soli 0
 
 toremove <- c()
 
